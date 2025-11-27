@@ -18,7 +18,7 @@ historico_downloads = []
 # ================================
 def get_wget_path():
     # Se estiver rodando como executável PyInstaller (onefile)
-    if hasattr(sys, '_MEIPASS'):
+    if getattr(sys, "frozen", False):
         return os.path.join(sys._MEIPASS, "wget.exe")
     # Se estiver rodando direto pelo Python
     return os.path.join(os.getcwd(), "wget.exe")
@@ -66,21 +66,25 @@ def download_thread(url, ferramenta):
     if ferramenta == "requests":
         baixar_requests(url)
     elif ferramenta == "wget":
-        baixar_wget(url)
+        # Se wget falhar, tenta requests automaticamente
+        if not baixar_wget(url):
+            log("[INFO] wget falhou, tentando requests como fallback...")
+            baixar_requests(url)
     elif ferramenta == "curl":
         baixar_curl(url)
 
 
+# ================================
+# Função de download com requests
+# ================================
 def baixar_requests(url):
     try:
-        resp = requests.get(url, stream=True)
-        total = int(resp.headers.get("content-length", 0))
-
         filename = url.split("/")[-1] or "download.bin"
         path = os.path.join(save_folder, filename)
+        log(f"Baixando {filename} com requests...")
 
-        log(f"Arquivo: {filename}")
-        log(f"Tamanho total: {formatar_tamanho(total)}")
+        resp = requests.get(url, stream=True, verify=False)
+        total = int(resp.headers.get("content-length", 0))
 
         start_time = time.time()
         downloaded = 0
@@ -90,13 +94,13 @@ def baixar_requests(url):
             for chunk in resp.iter_content(chunk_size=8192):
                 if not chunk:
                     continue
-
                 f.write(chunk)
                 downloaded += len(chunk)
 
-                percent = int((downloaded / total) * 100)
-                progress['value'] = percent
-                label_percent.config(text=f"{percent}%")
+                if total > 0:
+                    percent = int((downloaded / total) * 100)
+                    progress['value'] = percent
+                    label_percent.config(text=f"{percent}%")
 
                 elapsed = time.time() - last_time
                 if elapsed >= 0.5:
@@ -110,39 +114,58 @@ def baixar_requests(url):
 
                     last_time = time.time()
 
-        label_percent.config(text="Concluído!")
+        progress['value'] = 100
+        label_percent.config(text="Concluído (requests)")
         log("✔ Download concluído com sucesso!")
         historico_downloads.append(filename)
         atualizar_historico()
 
     except Exception as e:
-        log(f"[ERRO] {e}")
+        log(f"[ERRO requests] {e}")
 
 
+# ================================
+# Função de download com wget
+# ================================
 def baixar_wget(url):
     try:
         wget_path = get_wget_path()
 
         if not os.path.exists(wget_path):
-            log("[ERRO] wget.exe não encontrado na pasta do programa!")
-            return
+            log(f"[ERRO] wget.exe não encontrado em {wget_path}")
+            return False
 
         filename = url.split("/")[-1] or "download.bin"
         path = os.path.join(save_folder, filename)
 
-        log("Executando wget local (embutido)...")
-        subprocess.run([wget_path, "-O", path, url])
+        log(f"Executando wget sem console: {wget_path}")
+
+        result = subprocess.run(
+            [wget_path, "--no-check-certificate", "--max-redirect=10", "-O", path, url],
+            capture_output=True,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW  # não abre console
+        )
+
+        if result.returncode != 0:
+            log(f"[ERRO wget] {result.stderr.strip()}")
+            return False
 
         progress['value'] = 100
         label_percent.config(text="Concluído (wget)")
         log("✔ Download concluído (wget)")
         historico_downloads.append(filename)
         atualizar_historico()
+        return True
 
     except Exception as e:
         log(f"[ERRO wget] {e}")
+        return False
 
 
+# ================================
+# Função de download com curl
+# ================================
 def baixar_curl(url):
     try:
         filename = url.split("/")[-1] or "download.bin"
@@ -161,16 +184,18 @@ def baixar_curl(url):
         log(f"[ERRO curl] {e}")
 
 
+# ================================
+# Atualiza histórico na interface
+# ================================
 def atualizar_historico():
     listbox_historico.delete(0, "end")
     for item in historico_downloads[-10:]:
         listbox_historico.insert("end", item)
 
 
-# -------------------------------------------------
+# ================================
 # Interface
-# -------------------------------------------------
-
+# ================================
 app = tb.Window(title="Downloader", themename="darkly", size=(600, 600))
 app.resizable(False, False)
 
